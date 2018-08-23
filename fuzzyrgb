@@ -1,0 +1,261 @@
+#! /bin/bash
+
+# # # # # # # # # # # # # # # # # # #
+#                                   #
+# fuzzyrgb                          #
+#                                   #
+# Author:                           #
+# Alessandro Cavagni, year 2008     #
+#                                   #
+# # # # # # # # # # # # # # # # # # #
+
+fuzzyrgb() {
+	local DEBUG=			# attiva la modalita` debug (-d)
+	local RgbStartVal=		# terna RGB di partenza (rgb:x/y/z)
+	local TopOfDrift=		# tetto massimo per Drift (-t)
+	local BottomOfDrift=		# tetto minimo per Drift  (-b)
+	local Quantize=			# passo di quantizzazione per Drift (-q)
+	local Mode=			# "sub" o "mod" o "del" in caso di trabocco (-m)
+	local RandSeed=			# seme di inizializzazione per $RANDOM (-r)
+	local IsoFuzzy=			# abilita il comportamento "isofuzzy" (-i)
+	local Opposite=			# calcola l' opposto di RgbStartVal (-o)
+	local SignType=			# tipo di segno (pos, neg, rand) (-s)
+	local Sign=			# segno del Drift (1, -1)
+	local IsoSign=			# come IsoFuzzy ma per il segno del Drift (-x)
+	local Drift=			# scostamento da sommare o sottrarre a Val
+	local FirstDrift=		# troppo complicato da spiegare in tre parole
+	local FirstSign=		# come sopra (con buona pace di Wittgenstein)
+	local Range=			# intervallo dei valori possibili per Drift
+	local Val=			# generico valore della terna RGB iniziale
+	local Einf=			# estremo inferiore della quantizzazione
+	local Esup=			# estremo superiore della quantizzazione
+	local Remainder=		# resto indicante un valore da quantizzare
+	local EndVal=			# generico valore della terna RGB finale
+	local NumDecimal=		# stampa i valori in formato decimale
+	local LoopMode=			# modalita` loop
+	local Swap=			# variabile usata per effettuare lo scambio
+	local Help=			# testo del messaggio di aiuto
+	local Usage=			# se invocata, stampa Help e restituisce 1
+	local i=			# contatore usato per ciclare sulla terna
+	local -a OP			# array terna RGB opposta
+	local -a RGB			# array terna RGB finale (indici 0,1,2)
+
+### HELP STUFF START ###
+Help="Usage: $FUNCNAME [rgb:x/y/z] [-t top [-b bottom] [-q size]] [[-s sign] [-x]]\n\
+                [-m mode] [-r seed] [-o] [-i] [-n] [-l] [-d] [-h]\n
+  -t top\t\ttop of the drift range (between 1 and 255)
+  -b bottom\t\tbottom of the drift range (between 0 and (top - 1))
+  -q size\t\tquantize step size (between 2 and (top / 2))
+  -s sign\t\tsign of the drift, it can be \"pos\" \"neg\" or \"rand\"
+  -x     \t\tthe sign will be computed only once if \"rand\"
+  -m mode\t\tmode that can be \"sub\" or \"mod\" or \"del\"
+  -r seed\t\trandom seed (between 1 and 32767)
+  -o     \t\tcompute the opposite of the provided rgb value
+  -i     \t\tisofuzzy behaviour dedicated to Luca :-)
+  -n	 \t\tnumbers will be printed in decimal base
+  -l     \t\tenable loop mode
+  -d     \t\tenable debug mode
+  -h     \t\tthis help message "
+Usage='eval echo -e "$Help" && return 1'
+### HELP STUFF END ###
+
+	### USER INPUT CONTROL CODE START ###
+	if (($# != 0)); then
+		if [ "${1:0:4}" == "rgb:" ]; then
+			case "${1##*:}" in
+				[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f]/[0-9a-f][0-9a-f])
+					RgbStartVal="${1##*:}"
+				;;
+				*)	echo "bad rgb value"
+					return 1
+				;;
+			esac
+			shift
+		fi
+
+		OPTERR=0
+		while getopts ":t:b:q:s:xm:r:oinldh" OPTION; do
+			case "$OPTION" in
+				t)	if (( ((OPTARG < 1)) || ((OPTARG > 255)) )); then
+						echo "bad top drift value"
+						return 1
+					fi
+					TopOfDrift=$OPTARG
+				;;
+				b)	if !((TopOfDrift)); then
+						echo "top drift is required with -$OPTION"
+						return 1
+					fi
+					if (( ((OPTARG < 0)) || ((OPTARG >= TopOfDrift)) )); then
+						echo "bad bottom drift value"
+						return 1
+                    			fi
+					BottomOfDrift=$OPTARG
+				;;
+				q)	if !((TopOfDrift)); then
+						echo "top drift is required with -$OPTION"
+						return 1
+                    			fi
+					if (( ((OPTARG < 2)) || \
+						  ((OPTARG > ((TopOfDrift / 2)) )) )); then
+						echo "bad quantize step size value"
+						return 1
+					fi
+					Quantize=$OPTARG
+				;;
+				s)	case "$OPTARG" in
+						pos|neg|rand) SignType="$OPTARG";;
+						*)	echo "bad sign value"
+							return 1  
+						;;
+					esac
+				;;
+				x)	if [ "$SignType" == "pos" -o "$SignType" == "neg" ]; then
+						echo "sign must be \"rand\" with -$OPTION"
+						return 1
+					fi
+					IsoSign=1
+				;;
+				m)	if [ "$OPTARG" != "mod" -a "$OPTARG" != "sub" -a \
+						 "$OPTARG" != "del" ]; then
+						echo "bad mode value"
+						return 1
+					fi
+					Mode="$OPTARG"
+				;;
+				r)	if (( ((OPTARG < 0)) || ((OPTARG > 32767)) )); then
+						echo "bad random seed value"
+						return 1
+					fi
+					RandSeed="$OPTARG"
+				;;
+				o)	Opposite=1 ;;
+				i)	IsoFuzzy=1 ;;
+				n)	NumDecimal=1 ;;
+				l)	LoopMode=1;;
+				d)	DEBUG=1 ;;
+				h)	$Usage ;;
+				:)	echo "value is required after -$OPTARG"
+					return 1
+				;;
+				?)	echo "invalid option -$OPTARG"
+					return 1
+				;;
+			esac
+		done
+
+		shift $((OPTIND - 1))
+		if (($# != 0)); then
+			echo "invalid option '$*'"
+			return 1
+		fi
+	fi
+	### USER INPUT CONTROL CODE END ###
+
+	[ "$RgbStartVal" ] 	|| RgbStartVal="00/00/00"
+	((TopOfDrift))		|| TopOfDrift=255
+	((BottomOfDrift))	|| BottomOfDrift=0
+	[ "$Mode" ]	 	|| Mode="sub"
+	((RandSeed))		&& RANDOM=$RandSeed
+
+	if ((Opposite)); then
+		OP=( ${RgbStartVal//\// } )
+		OP[0]=$((0xff ^ 0x${OP[0]}))
+		OP[1]=$((0xff ^ 0x${OP[1]}))
+		OP[2]=$((0xff ^ 0x${OP[2]}))
+		RgbStartVal=$(builtin \
+			printf "%02x/%02x/%02x\n" ${OP[0]} ${OP[1]} ${OP[2]})
+	fi
+
+	case "$SignType" in
+		pos) Sign=1 ;;
+		neg) Sign=-1 ;;
+		*) SignType="rand";;
+	esac
+
+	if ((DEBUG)); then
+		echo -e "\n-*> [DEBUG MODE] <*-"
+		echo "Start Val    : $RgbStartVal"
+		echo "Top Drift    : $TopOfDrift"
+		echo "Bottom Drift : $BottomOfDrift"
+		echo "Range        : $((TopOfDrift - BottomOfDrift))"
+		echo "Mode         : $Mode"
+		echo "SignType     : $SignType"
+		echo -n "Drift        : "
+	fi
+
+while :; do
+	Range=$((TopOfDrift - BottomOfDrift))
+	i=0
+	for Val in ${RgbStartVal//\// }; do
+		Val="0x$Val"
+		Drift=$(( ((RANDOM % ((Range + 1)) )) + BottomOfDrift ))
+
+		# se [ 2 <= Quantize <= Drift ] AND [ 0 <= Remaninder < Quantize ]
+		# allora Einf e` sempre positivo, viceversa Esup puo essere > 255
+		if ((Quantize)); then
+			Remainder=$((Drift % Quantize))
+			if ((Remainder)); then
+				Einf=$((Drift - Remainder))
+				Esup=$((Einf + Quantize))
+				if ((Esup > 255)); then
+					Drift=$Einf
+				else
+					Drift=$(( ((Esup - Drift)) < ((Drift - Einf)) ? \
+								Esup : Einf))
+				fi
+			fi
+		fi
+	
+		if ((IsoFuzzy)); then
+			((i == 0)) && FirstDrift=$Drift || Drift=$FirstDrift
+		fi
+
+		if [ "$SignType" == "rand" ]; then
+			Sign=$(( ((RANDOM % 2)) ? 1 : -1))
+			if ((IsoSign)); then
+				((i == 0)) && FirstSign=$Sign || Sign=$FirstSign
+			fi
+		fi
+
+		((Drift *= Sign))
+
+		if ((DEBUG)); then
+			 echo -n "$Drift "
+		fi
+
+		EndVal=$((Val + Drift))
+		if ((EndVal > 255)); then
+			case "$Mode" in
+				sub) EndVal=$((255 - ((EndVal - 255)) )) ;;
+				mod) EndVal=$((EndVal - 255)) ;;
+				del) EndVal=255 ;;
+			esac
+		elif ((EndVal < 0)); then
+			case "$Mode" in
+				sub) EndVal=$((EndVal * -1)) ;;
+				mod) EndVal=$((EndVal + 255)) ;;
+				del) EndVal=0 ;;
+			esac
+		fi
+
+		RGB[$i]=$EndVal
+		((i++))
+	done
+
+	if ((DEBUG)); then
+		echo -e "\nEndValue     : ${RGB[0]} ${RGB[1]} ${RGB[2]}"
+		echo -e "-*> [DEBUG MODE] <*-\n"
+	fi
+
+	if ((NumDecimal)); then
+		echo "${RGB[0]} ${RGB[1]} ${RGB[2]}"
+	else
+		builtin printf "rgb:%02x/%02x/%02x\n" ${RGB[0]} ${RGB[1]} ${RGB[2]}
+	fi
+
+	((LoopMode != 1)) && break
+done
+}
+
+fuzzyrgb $*
